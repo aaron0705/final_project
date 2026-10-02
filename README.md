@@ -1,2 +1,2 @@
 # final_project
-My final project
+Thien's final project
