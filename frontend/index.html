@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+
+<html lang="en">
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <meta name="viewport"
+          content="width=device-width, initial-scale=1.0">
+
+    <title>
+        Driver Monitoring System
+    </title>
+
+    <link rel="stylesheet"
+          href="/css/style.css">
+
+</head>
+
+
+<body>
+
+    <header>
+
+        <h1>
+            DRIVER MONITORING SYSTEM
+        </h1>
+
+        <p>
+            AI-based Driver State Monitoring
+        </p>
+
+    </header>
+
+
+    <main class="dashboard">
+
+
+        <!-- CAMERA -->
+
+        <section class="camera-panel">
+
+            <h2>
+                Live Camera
+            </h2>
+
+            <div class="camera">
+
+    <video
+        controls
+        autoplay
+        muted
+        loop
+    >
+        <source
+            src="/videos/driver_test.mp4"
+            type="video/mp4"
+        >
+
+        Your browser does not support the video tag.
+
+    </video>
+
+</div>
+
+        </section>
+
+
+        <!-- DRIVER INFORMATION -->
+
+        <section class="info-panel">
+
+            <h2>
+                Driver Status
+            </h2>
+
+
+            <div class="status normal" id="driver-status">
+    NORMAL
+</div>
+            <h2>
+                Head Position
+            </h2>
+
+
+ 
+<div class="info">
+    Direction:
+    <strong id="head-direction">CENTER</strong>
+</div>
+
+<div class="info">
+    Yaw:
+    <strong id="head-yaw">0°</strong>
+</div>
+
+<div class="info">
+    Pitch:
+    <strong id="head-pitch">0°</strong>
+</div>
+
+<div class="info">
+    Roll:
+    <strong id="head-roll">0°</strong>
+</div>
+
+
+            <h2>
+                Warning
+            </h2>
+
+
+           <div class="status normal" id="warning-status">
+    NONE
+</div>
+
+        </section>
+
+    </main>
+<script src="/js/app.js"></script>
+</body>
+
+</html>
