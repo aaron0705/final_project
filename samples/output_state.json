@@ -1,0 +1,22 @@
+{
+  "type": "state",
+  "timestamp": 1760544000.123,
+  "source": "live",
+  "ai_online": true,
+  "head_pose": {
+    "direction": "LEFT",
+    "yaw": -34.2,
+    "pitch": 3.1,
+    "roll": -1.4,
+    "confidence": 0.93
+  },
+  "face_detected": true,
+  "driver_status": "WARNING",
+  "warning": {
+    "active": true,
+    "code": "LEFT",
+    "message": "Tài xế quay đầu sang TRÁI quá lâu",
+    "off_duration": 2.4,
+    "threshold": 2.0
+  }
+}

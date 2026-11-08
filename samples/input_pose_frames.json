@@ -1,0 +1,7 @@
+[
+  {"yaw": 0.5,  "pitch": 1.0,  "roll": 0.2,  "confidence": 0.95, "face_detected": true},
+  {"yaw": -36,  "pitch": 2.0,  "roll": -1.0, "confidence": 0.92, "face_detected": true, "direction": "LEFT"},
+  {"yaw": 34,   "pitch": 0.0,  "roll": 1.5,  "confidence": 0.90, "face_detected": true, "direction": "RIGHT"},
+  {"yaw": 1.0,  "pitch": -28,  "roll": 0.0,  "confidence": 0.88, "face_detected": true, "direction": "DOWN"},
+  {"yaw": 0.0,  "pitch": 0.0,  "roll": 0.0,  "confidence": 0.0,  "face_detected": false}
+]
