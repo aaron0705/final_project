@@ -69,6 +69,22 @@ select, .btn {
   aspect-ratio: 16 / 9; border: 3px solid transparent; transition: border-color .2s;
 }
 .video-wrap video { width: 100%; height: 100%; object-fit: contain; display: block; }
+.cam-bar {
+  display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 10px 6px 4px; font-size: 13px;
+}
+.cam-bar[hidden] { display: none; }
+.cam-bar select { max-width: 260px; }
+.btn.rec { border-color: #7f1d1d; }
+.btn.rec.on { background: #991b1b; border-color: #ef4444; animation: recglow 1.2s infinite; }
+@keyframes recglow { 50% { box-shadow: 0 0 0 4px rgba(239, 68, 68, .35); } }
+.rec-timer { font-variant-numeric: tabular-nums; color: #fca5a5; font-weight: 700; }
+.rec-timer[hidden] { display: none; }
+.chk { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); cursor: pointer; }
+.cam-info { color: var(--muted); font-size: 12px; }
+.video-wrap.webcam video::-webkit-media-controls { display: none !important; }
+.video-wrap .overlay {
+  position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none;
+}
 .video-empty {
   position: absolute; inset: 0; display: grid; place-items: center; text-align: center;
   padding: 24px; color: var(--muted); background: #060a18;

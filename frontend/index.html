@@ -18,6 +18,12 @@
     <div class="top-actions">
       <span class="pill" id="connPill"><i class="dot"></i><span id="connText">Đang kết nối…</span></span>
       <span class="pill" id="aiPill"><i class="dot"></i><span id="aiText">AI: --</span></span>
+      <label class="select">Hình ảnh
+        <select id="srcSelect">
+          <option value="file">Video file</option>
+          <option value="webcam">Webcam</option>
+        </select>
+      </label>
       <label class="select">Nguồn dữ liệu
         <select id="modeSelect">
           <option value="mock">Giả lập (mock)</option>
@@ -33,6 +39,7 @@
     <section class="card video-card">
       <div class="video-wrap" id="videoWrap">
         <video id="video" autoplay muted loop playsinline controls></video>
+        <canvas id="overlay" class="overlay"></canvas>
         <div class="video-empty" id="videoEmpty" hidden>
           Chưa có video. Hãy đặt file <code>sample.mp4</code> vào thư mục <code>data/</code> rồi tải lại trang.
         </div>
@@ -42,6 +49,13 @@
           <span class="icon">⚠</span>
           <span id="alarmText">CẢNH BÁO</span>
         </div>
+      </div>
+      <div class="cam-bar" id="camBar" hidden>
+        <select id="camDevice" title="Chọn webcam"></select>
+        <button id="recBtn" class="btn rec" type="button">⏺ Ghi hình</button>
+        <span class="rec-timer" id="recTimer" hidden>00:00</span>
+        <label class="chk"><input type="checkbox" id="relayChk" checked> Gửi khung hình cho AI</label>
+        <span class="cam-info" id="camInfo"></span>
       </div>
     </section>
 

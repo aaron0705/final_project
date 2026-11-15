@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
@@ -70,6 +70,18 @@ class Hub:
         self.mode = DATA_SOURCE if DATA_SOURCE in ("mock", "live") else "mock"
         self.last_live = 0.0
         self.last_message: dict = self._empty_message()
+        # khung hình webcam do trình duyệt gửi lên, để AI đọc qua /stream.mjpg
+        self.frame: Optional[bytes] = None
+        self.frame_seq = 0
+        self.frame_time = 0.0
+
+    def set_frame(self, jpeg: bytes) -> None:
+        self.frame = jpeg
+        self.frame_seq += 1
+        self.frame_time = time.monotonic()
+
+    def camera_online(self) -> bool:
+        return self.frame is not None and time.monotonic() - self.frame_time < 3.0
 
     def _empty_message(self, status: str = "NO_SIGNAL") -> dict:
         return {
@@ -178,7 +190,7 @@ app = FastAPI(title="Driver Monitoring Dashboard", lifespan=lifespan)
 # ---------------------------------------------------------------- REST
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "mode": hub.mode, "clients": len(hub.clients)}
+    return {"status": "ok", "mode": hub.mode, "clients": len(hub.clients), "camera_online": hub.camera_online()}
 
 
 @app.get("/api/config")
@@ -250,6 +262,50 @@ async def ws_ingest(ws: WebSocket):
             await hub.broadcast(hub.process(pose))
     except WebSocketDisconnect:
         pass
+
+
+# ---------------------------------------------------------------- Webcam relay
+MAX_FRAME_BYTES = 2_000_000
+
+
+@app.websocket("/ws/camera")
+async def ws_camera(ws: WebSocket):
+    """Trình duyệt gửi từng khung hình webcam (JPEG nhị phân) lên đây."""
+    await ws.accept()
+    try:
+        while True:
+            data = await ws.receive_bytes()
+            if 2 < len(data) <= MAX_FRAME_BYTES and data[:2] == b"\xff\xd8":     # chỉ nhận JPEG hợp lệ
+                hub.set_frame(data)
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+
+
+@app.get("/api/frame.jpg")
+def latest_frame():
+    """Khung hình webcam mới nhất (một ảnh JPEG)."""
+    if hub.frame is None:
+        raise HTTPException(404, "chưa có khung hình webcam, hãy bật webcam trên dashboard")
+    return Response(hub.frame, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/stream.mjpg")
+async def mjpeg_stream():
+    """Luồng MJPEG của webcam. AI đọc bằng cv2.VideoCapture('http://localhost:8000/stream.mjpg')."""
+    boundary = "frame"
+
+    async def gen():
+        seq = -1
+        while True:
+            if hub.frame is not None and hub.frame_seq != seq:
+                seq = hub.frame_seq
+                jpg = hub.frame
+                yield (f"--{boundary}\r\nContent-Type: image/jpeg\r\nContent-Length: {len(jpg)}\r\n\r\n").encode() \
+                    + jpg + b"\r\n"
+            await asyncio.sleep(0.02)
+
+    return StreamingResponse(gen(), media_type=f"multipart/x-mixed-replace; boundary={boundary}",
+                             headers={"Cache-Control": "no-store"})
 
 
 # ---------------------------------------------------------------- Static
