@@ -1,11 +1,12 @@
-/* Dashboard giám sát tài xế - client */
+/* Dashboard giám sát tài xế - client
+ * Nguồn hình ảnh: webcam (trình duyệt giữ webcam).  Nguồn dữ liệu: AI (live) qua WebSocket. */
 (() => {
   const $ = (id) => document.getElementById(id);
   const el = {
     video: $("video"), overlay: $("overlay"), videoEmpty: $("videoEmpty"), videoBadge: $("videoBadge"), videoDir: $("videoDir"),
     alarmBanner: $("alarmBanner"), alarmText: $("alarmText"),
-    connPill: $("connPill"), connText: $("connText"), aiPill: $("aiPill"), aiText: $("aiText"),
-    modeSelect: $("modeSelect"), soundBtn: $("soundBtn"),
+    connPill: $("connPill"), connText: $("connText"), aiPill: $("aiPill"), aiState: $("aiState"),
+    soundBtn: $("soundBtn"),
     statusBig: $("statusBig"), statusSub: $("statusSub"),
     timerText: $("timerText"), timerFill: $("timerFill"),
     warnBox: $("warnBox"), warnMsg: $("warnMsg"),
@@ -14,7 +15,7 @@
     bYaw: $("bYaw"), bPitch: $("bPitch"), bRoll: $("bRoll"),
     log: $("log"), clearLog: $("clearLog"),
     srcSelect: $("srcSelect"), camBar: $("camBar"), camDevice: $("camDevice"), recBtn: $("recBtn"),
-    recTimer: $("recTimer"), relayChk: $("relayChk"), camInfo: $("camInfo"), videoWrap: $("videoWrap"),
+    recTimer: $("recTimer"), relayChk: $("relayChk"), camInfo: $("camInfo"),
   };
 
   const DIR_TEXT = {
@@ -26,20 +27,17 @@
     WARNING: "Có dấu hiệu mất tập trung",
     NO_SIGNAL: "Chưa nhận được dữ liệu từ AI",
   };
-  const RANGE = { yaw: 60, pitch: 40, roll: 40 };   // biên hiển thị thanh đo (độ)
+  const RANGE = { yaw: 60, pitch: 40, roll: 40 };
 
   let ws = null, retry = 0, soundOn = false, audioCtx = null;
   let prevStatus = null, prevDir = null, config = { warn_after: 2.0 };
 
-  /* ---------------- helpers ---------------- */
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const fmt = (v) => (v == null ? "—" : `${Number(v).toFixed(1)}°`);
 
-  // Khi mô hình chỉ cho hướng (Object Detection) không có góc, đặt chấm radar theo hướng
   const DIR_POS = { FORWARD: [0, 0], LEFT: [-0.6, 0], RIGHT: [0.6, 0], UP: [0, 0.6], DOWN: [0, -0.6] };
-  let lastDet = null;   // khung bao gần nhất, để vẽ lại khi đổi kích thước
+  let lastDet = null;
 
-  /* Vẽ khung bao lên video (video dùng object-fit: contain nên phải tính phần ảnh thật) */
   function drawBox() {
     const cv = el.overlay;
     if (!cv) return;
@@ -82,7 +80,7 @@
   }
 
   function showVideoMsg(html) {
-    el.videoEmpty.innerHTML = html;
+    el.videoEmpty.innerHTML = `<div class="msg">${html}</div>`;
     el.videoEmpty.hidden = false;
   }
 
@@ -114,21 +112,9 @@
 
     document.body.dataset.status = status;
 
-    // Đồng bộ video với khung hình mà AI đang xử lý (chỉ khi AI đọc từ file video, không áp dụng cho webcam)
-    if (msg.video_time != null && !el.video.srcObject && el.video.readyState > 0 && !el.video.seeking) {
-      const drift = Math.abs(el.video.currentTime - msg.video_time);
-      const dur = el.video.duration || 0;
-      const wrapDrift = dur ? Math.min(drift, dur - drift) : drift;   // chênh lệch khi video lặp vòng
-      if (wrapDrift > 0.4) {
-        el.video.currentTime = msg.video_time;
-        el.video.play().catch(() => {});
-      }
-    }
-
-    // Head pose
     const dir = hp.direction || "--";
-    el.mDirection.textContent = DIR_TEXT[dir] ? `${dir}` : dir;
-    el.mDirection.title = DIR_TEXT[dir] || "";
+    el.mDirection.textContent = dir === "NO_FACE" ? "" : dir;
+    el.mDirection.title = dir === "NO_FACE" ? "" : DIR_TEXT[dir] || "";
     el.mYaw.textContent = fmt(hp.yaw);
     el.mPitch.textContent = fmt(hp.pitch);
     el.mRoll.textContent = fmt(hp.roll);
@@ -137,7 +123,6 @@
     setBar(el.bPitch, hp.pitch ?? 0, RANGE.pitch);
     setBar(el.bRoll, hp.roll ?? 0, RANGE.roll);
 
-    // Radar: yaw -> ngang, pitch -> dọc, roll -> xoay
     const R = 100;
     let fx, fy;
     if (hp.yaw != null && hp.pitch != null) {
@@ -146,50 +131,52 @@
     } else {
       [fx, fy] = DIR_POS[dir] || [0, 0];
     }
-    const x = fx * R;
-    const y = -fy * R;
-    el.headDot.style.transform = `translate(${x}px, ${y}px) rotate(${hp.roll ?? 0}deg)`;
+    el.headDot.style.transform = `translate(${fx * R}px, ${-fy * R}px) rotate(${hp.roll ?? 0}deg)`;
     el.headDot.style.opacity = msg.face_detected ? 1 : 0.35;
 
-    // Khung bao từ Object Detection
     const det = msg.detection || {};
     lastDet = det.bbox ? { bbox: det.bbox, label: det.label, direction: dir,
                            confidence: hp.confidence, warning: status === "WARNING" } : null;
     drawBox();
 
-    // Status
-    el.statusBig.textContent = status === "NO_SIGNAL" ? "NO SIGNAL" : status;
-    el.statusSub.textContent = status === "WARNING" && w.message ? w.message : STATUS_SUB[status] || "";
-    el.videoBadge.textContent = status === "NO_SIGNAL" ? "NO SIGNAL" : status;
-    el.videoBadge.style.color = status === "WARNING" ? "#fca5a5" : status === "NORMAL" ? "#86efac" : "#cbd5e1";
-    el.videoDir.textContent = DIR_TEXT[dir] ? `${dir} · ${DIR_TEXT[dir]}` : dir;
+  el.statusBig.textContent = status === "NO_SIGNAL" ? "" : status;
+el.statusSub.textContent = status === "NO_SIGNAL"
+  ? ""
+  : status === "WARNING" && w.message
+    ? w.message
+    : STATUS_SUB[status] || "";
 
-    // Timer
+el.videoBadge.textContent = status === "NO_SIGNAL" ? "" : status;
+el.videoBadge.style.color =
+  status === "WARNING" ? "#fca5a5" :
+  status === "NORMAL" ? "#86efac" :
+  "#cbd5e1";
+
+el.videoDir.textContent = dir === "NO_FACE"
+  ? ""
+  : DIR_TEXT[dir]
+    ? `${dir} · ${DIR_TEXT[dir]}`
+    : dir;
+
     const dur = w.off_duration || 0;
     el.timerText.textContent = `${dur.toFixed(1)} / ${threshold.toFixed(1)} s`;
     el.timerFill.style.width = `${clamp(dur / threshold, 0, 1) * 100}%`;
     el.timerFill.classList.toggle("hot", status === "WARNING");
 
-    // Warning
     const active = !!w.active;
     el.alarmBanner.hidden = !active;
     el.alarmText.textContent = active ? `CẢNH BÁO: ${w.message || "mất tập trung"}` : "";
     el.warnBox.classList.toggle("active", active);
     el.warnMsg.textContent = active ? w.message || "Mất tập trung" : "Không có cảnh báo";
 
-    // AI badge
     el.aiPill.className = "pill " + (msg.ai_online ? "ok" : "bad");
-    el.aiText.textContent = msg.ai_online
-      ? `Nguồn: ${msg.source === "mock" ? "giả lập" : "AI thật"}`
-      : "AI: mất tín hiệu";
-    if (el.modeSelect.value !== msg.source && msg.source) el.modeSelect.value = msg.source;
+    el.aiState.textContent = msg.ai_online ? "đang nhận dữ liệu" : "chưa có dữ liệu";
 
-    // Log + âm thanh khi đổi trạng thái
     if (status !== prevStatus) {
       if (status === "WARNING") { addLog(`WARNING — ${w.message || "mất tập trung"}`, "warn"); beep(); }
       else if (status === "NORMAL" && prevStatus === "WARNING") addLog("Trở lại NORMAL — tài xế nhìn thẳng", "ok");
-      else if (status === "NO_SIGNAL") addLog("Mất tín hiệu từ AI", "warn");
-      else if (prevStatus === null || prevStatus === "NO_SIGNAL") addLog("Bắt đầu nhận dữ liệu", "info");
+      else if (status === "NO_SIGNAL") { if (prevStatus !== null) addLog("Mất tín hiệu từ AI", "warn"); }
+      else if (prevStatus === null || prevStatus === "NO_SIGNAL") addLog("Bắt đầu nhận dữ liệu từ AI", "info");
       prevStatus = status;
     }
     if (dir !== prevDir && status !== "NO_SIGNAL") {
@@ -198,7 +185,7 @@
     }
   }
 
-  /* ---------------- WebSocket ---------------- */
+  /* ---------------- WebSocket (nhận kết quả AI) ---------------- */
   function setConn(ok, text) {
     el.connPill.className = "pill " + (ok ? "ok" : "bad");
     el.connText.textContent = text;
@@ -209,7 +196,6 @@
     ws = new WebSocket(`${proto}://${location.host}/ws`);
     ws.onopen = () => {
       retry = 0;
-      console.log("WebSocket connected");
       setConn(true, "Đã kết nối");
       addLog("WebSocket đã kết nối", "ok");
     };
@@ -218,11 +204,15 @@
       catch (e) { console.error("JSON lỗi:", e, ev.data); }
     };
     ws.onclose = () => {
-      console.warn("WebSocket disconnected");
       setConn(false, "Mất kết nối — đang thử lại…");
       document.body.dataset.status = "NO_SIGNAL";
-      el.statusBig.textContent = "NO SIGNAL";
+      el.statusBig.textContent = "";
+      el.statusSub.textContent = "";
+      el.videoBadge.textContent = "";
+      el.videoDir.textContent = "";
       el.alarmBanner.hidden = true;
+      el.aiPill.className = "pill bad";
+      el.aiState.textContent = "chưa có dữ liệu";
       prevStatus = "NO_SIGNAL";
       const delay = Math.min(1000 * 2 ** retry++, 8000);
       setTimeout(connect, delay);
@@ -230,91 +220,129 @@
     ws.onerror = () => ws.close();
   }
 
-  /* ---------------- Webcam: hiển thị, ghi hình, gửi khung hình cho AI ---------------- */
+  /* ---------------- Webcam: dò, hiển thị, ghi hình, gửi khung hình cho AI ---------------- */
   const cam = { stream: null, recorder: null, chunks: [], recStart: 0, recTimerId: null,
-                relayWs: null, relayId: null, canvas: document.createElement("canvas"), sentFrames: 0 };
+                relayWs: null, relayId: null, canvas: document.createElement("canvas"),
+                starting: false, autoFailed: false, noCamLogged: false, changeTimer: null };
   const RELAY_FPS = 10, RELAY_WIDTH = 640, RELAY_QUALITY = 0.7;
 
   const pad2 = (n) => String(n).padStart(2, "0");
   const stamp = () => { const d = new Date();
     return `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}_${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}`; };
 
-  async function listCameras(selectId) {
+  /* Ô "Nguồn hình ảnh": "Webcam" khi có webcam, "Không tìm thấy webcam" khi không có */
+  function setSource(state) {
+    const text = { checking: "Đang dò webcam…", webcam: "Webcam", none: "Không tìm thấy webcam" }[state];
+    el.srcSelect.textContent = text;
+    $("srcPill").className = "pill " + (state === "webcam" ? "ok" : state === "none" ? "bad" : "");
+    el.srcSelect.dataset.state = state;
+  }
+
+  const MSG_NO_CAM = "<b>Không tìm thấy webcam.</b><br><small>Hãy cắm webcam vào máy. Trang tự nhận khi bạn cắm.</small>";
+  const MSG_INSECURE = "<b>Không tìm thấy webcam.</b><br><small>Trình duyệt chỉ cho dùng webcam khi mở bằng " +
+    "<code>http://localhost:8000</code> (hoặc HTTPS), không mở bằng địa chỉ IP.</small>";
+
+  function showNoCam(html) {
+    setSource("none");
+    el.camBar.hidden = true;
+    showVideoMsg(html || MSG_NO_CAM);
+    if (!cam.noCamLogged) { addLog("Không tìm thấy webcam", "warn"); cam.noCamLogged = true; }
+  }
+
+  async function listCameras(selectedId) {
     try {
       const devs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "videoinput");
       el.camDevice.innerHTML = "";
       devs.forEach((d, i) => {
         const o = document.createElement("option");
-        o.value = d.deviceId; o.textContent = d.label || `Camera ${i + 1}`;
+        o.value = d.deviceId; o.textContent = d.label || `Webcam ${i + 1}`;
         el.camDevice.append(o);
       });
-      if (selectId) el.camDevice.value = selectId;
-    } catch (e) { console.warn("Không liệt kê được camera", e); }
+      if (selectedId) el.camDevice.value = selectedId;
+      el.camDevice.hidden = devs.length <= 1;
+    } catch (e) { console.warn("Không liệt kê được webcam", e); }
+  }
+
+  function camErrorText(e) {
+    return e.name === "NotAllowedError" ? "Bạn chưa cho phép trình duyệt dùng webcam.<br><small>Bấm biểu tượng ổ khoá cạnh địa chỉ → Camera → Cho phép, rồi bấm Thử lại.</small>"
+      : e.name === "NotReadableError" ? "Webcam đang được chương trình khác sử dụng.<br><small>Tắt Zoom, Teams, app Camera hoặc tab khác đang mở webcam rồi bấm Thử lại.</small>"
+      : `Không mở được webcam (${e.name}).`;
   }
 
   async function startWebcam(deviceId) {
-    stopWebcam(false);
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      showVideoMsg("Trình duyệt không cho dùng webcam. Hãy mở trang bằng <code>http://localhost:8000</code> (hoặc HTTPS).");
-      return false;
-    }
+    if (cam.starting) return false;
+    cam.starting = true;
     try {
-      cam.stream = await navigator.mediaDevices.getUserMedia({
-        video: { deviceId: deviceId ? { exact: deviceId } : undefined, width: { ideal: 1280 }, height: { ideal: 720 },
-                 frameRate: { ideal: 30 } },
-        audio: false,
+      stopWebcam();
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { showNoCam(MSG_INSECURE); return false; }
+      const want = (id) => ({ video: { deviceId: id ? { exact: id } : undefined, width: { ideal: 1280 },
+                                       height: { ideal: 720 }, frameRate: { ideal: 30 } }, audio: false });
+      let stream;
+      try {
+        try { stream = await navigator.mediaDevices.getUserMedia(want(deviceId)); }
+        catch (e) {
+          if (deviceId && e.name === "OverconstrainedError") stream = await navigator.mediaDevices.getUserMedia(want(null));
+          else throw e;
+        }
+      } catch (e) {
+        console.error("getUserMedia lỗi", e);
+        if (e.name === "NotFoundError" || e.name === "OverconstrainedError") { showNoCam(); return false; }
+        cam.autoFailed = true;
+        setSource("webcam");
+        showVideoMsg(`${camErrorText(e)}<br><button id="retryCam" class="btn" type="button">Thử lại</button>`);
+        addLog(`Không mở được webcam (${e.name})`, "warn");
+        return false;
+      }
+      cam.autoFailed = false;
+      cam.noCamLogged = false;
+      cam.stream = stream;
+      el.videoEmpty.hidden = true;
+      el.video.srcObject = stream;
+      el.video.play().catch(() => {});
+      setSource("webcam");
+      const track = stream.getVideoTracks()[0];
+      const s = track.getSettings();
+      await listCameras(s.deviceId);
+      el.camBar.hidden = false;
+      el.camInfo.textContent = `${s.width}×${s.height} @ ${Math.round(s.frameRate || 0)} fps`;
+      addLog(`Đã bật webcam: ${track.label || "webcam"} (${s.width}×${s.height})`, "ok");
+      track.addEventListener("ended", () => {
+        addLog("Webcam bị ngắt", "warn");
+        stopWebcam();
+        setTimeout(() => detectWebcam(false), 500);
       });
-    } catch (e) {
-      console.error("getUserMedia lỗi", e);
-      const why = e.name === "NotAllowedError" ? "Bạn chưa cho phép trình duyệt dùng camera (bấm biểu tượng ổ khoá cạnh địa chỉ → Camera → Cho phép)."
-        : e.name === "NotFoundError" ? "Không tìm thấy webcam nào."
-        : e.name === "NotReadableError" ? "Webcam đang được chương trình khác sử dụng (Zoom, Camera, Teams...). Hãy tắt chúng rồi thử lại."
-        : `Không mở được webcam (${e.name}).`;
-      showVideoMsg(why);
-      return false;
+      startRelay();
+      return true;
+    } finally {
+      cam.starting = false;
     }
-    el.videoEmpty.hidden = true;
-    el.video.removeAttribute("loop");
-    el.video.removeAttribute("controls");
-    el.video.removeAttribute("src");
-    el.video.srcObject = cam.stream;
-    el.video.play().catch(() => {});
-    el.videoWrap.classList.add("webcam");
-    const track = cam.stream.getVideoTracks()[0];
-    const s = track.getSettings();
-    await listCameras(s.deviceId);
-    el.camInfo.textContent = `${s.width}×${s.height} @ ${Math.round(s.frameRate || 0)} fps`;
-    addLog(`Đã bật webcam: ${track.label || "camera"} (${s.width}×${s.height})`, "ok");
-    track.addEventListener("ended", () => { addLog("Webcam bị ngắt", "warn"); stopWebcam(true); });
-    startRelay();
-    return true;
   }
 
-  function stopWebcam(backToFile) {
+  function stopWebcam() {
     stopRecording();
     stopRelay();
     if (cam.stream) { cam.stream.getTracks().forEach((t) => t.stop()); cam.stream = null; }
     el.video.srcObject = null;
-    el.videoWrap.classList.remove("webcam");
-    if (backToFile) {
-      el.srcSelect.value = "file";
-      showFile();
-    }
-  }
-
-  function showFile() {
     el.camBar.hidden = true;
-    el.video.setAttribute("loop", "");
-    el.video.setAttribute("controls", "");
-    if (config.video_url) {
-      el.video.src = `${config.video_url}?v=${Date.now()}`;
-      el.video.play().catch(() => {});
-    } else {
-      showVideoMsg(`Server không tìm thấy file video.<br>Đường dẫn server đang tìm:<br><code>${config.video_path}</code>`);
-    }
   }
 
-  /* --- Ghi hình: lưu thành file .webm tải về máy (dùng để làm dữ liệu huấn luyện) --- */
+  async function detectWebcam(first) {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) { showNoCam(MSG_INSECURE); return; }
+    let n = 0;
+    try { n = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "videoinput").length; }
+    catch (e) { console.warn("enumerateDevices lỗi", e); }
+    if (n > 0) {
+      setSource("webcam");
+      if (!cam.stream && !cam.starting && !cam.autoFailed) await startWebcam(null);
+      else if (cam.stream) await listCameras(el.camDevice.value);
+      return;
+    }
+    if (first && !cam.stream) { await startWebcam(null); return; }
+    if (cam.stream) stopWebcam();
+    showNoCam();
+  }
+
+  /* --- Ghi hình: lưu file .webm về máy --- */
   function pickMime() {
     const list = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm", "video/mp4"];
     return list.find((m) => window.MediaRecorder && MediaRecorder.isTypeSupported(m)) || "";
@@ -377,16 +405,16 @@
         cam.canvas.getContext("2d").drawImage(v, 0, 0, cam.canvas.width, cam.canvas.height);
         busy = true;
         cam.canvas.toBlob(async (b) => {
-          try { if (b && sock.readyState === 1) { sock.send(await b.arrayBuffer()); cam.sentFrames++; } }
+          try { if (b && sock.readyState === 1) sock.send(await b.arrayBuffer()); }
           finally { busy = false; }
         }, "image/jpeg", RELAY_QUALITY);
       }, 1000 / RELAY_FPS);
     };
     sock.onclose = () => {
       clearInterval(cam.relayId);
-      if (cam.relayWs === sock && cam.stream && el.relayChk.checked) setTimeout(startRelay, 2000);   // tự nối lại
+      if (cam.relayWs === sock && cam.stream && el.relayChk.checked) setTimeout(startRelay, 2000);
     };
-    sock.onerror = () => sock.close();
+    sock.onerror = () => sock.close();el.statusBig.textContent = status === "NO_SIGNAL" ? "NO SIGNAL" : status;
   }
 
   function stopRelay() {
@@ -395,68 +423,31 @@
     if (s) { s.onclose = null; try { s.close(); } catch (e) { /* bỏ qua */ } }
   }
 
-  el.srcSelect.addEventListener("change", async () => {
-    if (el.srcSelect.value === "webcam") {
-      el.camBar.hidden = false;
-      const ok = await startWebcam(null);
-      if (!ok) { el.srcSelect.value = "file"; el.camBar.hidden = true; showFile(); }
-    } else {
-      stopWebcam(false);
-      showFile();
-    }
-  });
   el.camDevice.addEventListener("change", () => startWebcam(el.camDevice.value));
   el.recBtn.addEventListener("click", () => (cam.recorder ? stopRecording() : startRecording()));
   el.relayChk.addEventListener("change", () => (el.relayChk.checked ? startRelay() : stopRelay()));
+  el.videoEmpty.addEventListener("click", (e) => {
+    if (e.target && e.target.id === "retryCam") { cam.autoFailed = false; detectWebcam(true); }
+  });
   window.addEventListener("beforeunload", () => { if (cam.recorder && cam.recorder.state !== "inactive") cam.recorder.stop(); });
 
   /* ---------------- init ---------------- */
   async function init() {
-    try {
-      config = await (await fetch("/api/config")).json();
-      el.modeSelect.value = config.mode;
-      if (config.video_url) {
-        el.video.src = `${config.video_url}?v=${Date.now()}`;   // tránh trình duyệt dùng video cũ trong cache
-        el.video.play().catch(() => {});
-      } else {
-        showVideoMsg(`Server không tìm thấy file video.<br>Đường dẫn server đang tìm:<br><code>${config.video_path}</code>`);
-      }
-    } catch (e) {
-      console.error("Không đọc được /api/config", e);
-      showVideoMsg("Không kết nối được tới server (/api/config).");
-    }
-    el.video.addEventListener("loadeddata", () => { el.videoEmpty.hidden = true; drawBox(); });
+    el.video.addEventListener("loadeddata", drawBox);
     window.addEventListener("resize", drawBox);
-    el.video.addEventListener("error", () => {
-      const err = el.video.error || {};
-      console.error("Video error", err.code, err.message);
-      const reason = {
-        1: "Tải video bị huỷ.",
-        2: "Lỗi mạng khi tải video.",
-        3: "File video bị lỗi khi giải mã.",
-        4: "Trình duyệt không hỗ trợ định dạng/codec của video này (cần MP4 H.264). Hãy chuyển đổi bằng ffmpeg.",
-      }[err.code] || "Không phát được video.";
-      showVideoMsg(`${reason}<br><small>Mã lỗi: ${err.code ?? "?"} — xem thêm trong Console (F12)</small>`);
-    });
+    try { config = await (await fetch("/api/config")).json(); }
+    catch (e) { console.error("Không đọc được /api/config", e); }
     connect();
+    setSource("checking");
+    if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+      navigator.mediaDevices.addEventListener("devicechange", () => {
+        clearTimeout(cam.changeTimer);
+        cam.changeTimer = setTimeout(() => detectWebcam(false), 500);
+      });
+    }
+    await detectWebcam(true);
   }
 
-  el.modeSelect.addEventListener("change", async () => {
-    try {
-      await fetch("/api/mode", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: el.modeSelect.value }),
-      });
-      addLog(`Chuyển nguồn dữ liệu: ${el.modeSelect.value}`, "info");
-      prevStatus = null;
-    } catch (e) { addLog("Không đổi được nguồn dữ liệu", "warn"); }
-  });
-
-  el.soundBtn.addEventListener("click", () => {
-    soundOn = !soundOn;
-    el.soundBtn.textContent = soundOn ? "🔊 Âm thanh: bật" : "🔇 Âm thanh: tắt";
-    if (soundOn) beep();
-  });
   el.clearLog.addEventListener("click", () => { el.log.innerHTML = ""; });
 
   init();

@@ -1,5 +1,8 @@
 """Dashboard giám sát tài xế - backend FastAPI + WebSocket.
 
+Luồng dữ liệu thật:
+  Webcam -> trình duyệt -> /ws/camera -> /stream.mjpg -> AI -> POST /api/pose -> /ws -> dashboard
+
 Chạy:  uvicorn main:app --reload --port 8000   (trong thư mục backend/)
 """
 import asyncio
@@ -15,17 +18,12 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
-from alert import FORWARD, NO_FACE, AlertEngine, classify_direction
-from simulator import pose_stream
+from alert import NO_FACE, AlertEngine, classify_direction
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = BASE_DIR / "frontend"
-DATA_DIR = Path(os.getenv("VIDEO_DIR", BASE_DIR / "data"))
-VIDEO_FILE = os.getenv("VIDEO_FILE", "sample.mp4")
-DATA_SOURCE = os.getenv("DATA_SOURCE", "mock").lower()      # mock | live
 WARN_AFTER = float(os.getenv("WARN_AFTER", "2.0"))
-LIVE_TIMEOUT = float(os.getenv("LIVE_TIMEOUT", "2.0"))      # không có dữ liệu AI quá X giây -> NO_SIGNAL
-
+AI_TIMEOUT = float(os.getenv("AI_TIMEOUT", os.getenv("LIVE_TIMEOUT", "2.0")))   # AI không gửi dữ liệu quá X giây -> NO_SIGNAL
 
 VALID_DIRECTIONS = {"FORWARD", "LEFT", "RIGHT", "UP", "DOWN", "NO_FACE"}
 
@@ -46,7 +44,6 @@ class PoseIn(BaseModel):
     bbox: Optional[list[float]] = Field(None, min_length=4, max_length=4,
                                         description="[x1, y1, x2, y2] chuẩn hoá 0..1 theo kích thước khung hình")
     timestamp: Optional[float] = None
-    video_time: Optional[float] = Field(None, description="vị trí (giây) của khung hình trong file video, để dashboard đồng bộ video")
 
     @field_validator("direction")
     @classmethod
@@ -59,16 +56,11 @@ class PoseIn(BaseModel):
         return v
 
 
-class ModeIn(BaseModel):
-    mode: str
-
-
 class Hub:
     def __init__(self) -> None:
         self.clients: set[WebSocket] = set()
         self.engine = AlertEngine(warn_after=WARN_AFTER)
-        self.mode = DATA_SOURCE if DATA_SOURCE in ("mock", "live") else "mock"
-        self.last_live = 0.0
+        self.last_ai = 0.0                       # lần gần nhất AI gửi dữ liệu (monotonic)
         self.last_message: dict = self._empty_message()
         # khung hình webcam do trình duyệt gửi lên, để AI đọc qua /stream.mjpg
         self.frame: Optional[bytes] = None
@@ -83,21 +75,24 @@ class Hub:
     def camera_online(self) -> bool:
         return self.frame is not None and time.monotonic() - self.frame_time < 3.0
 
-    def _empty_message(self, status: str = "NO_SIGNAL") -> dict:
+    def ai_online(self) -> bool:
+        return self.last_ai > 0 and time.monotonic() - self.last_ai < AI_TIMEOUT
+
+    def _empty_message(self) -> dict:
         return {
             "type": "state",
             "timestamp": time.time(),
-            "source": getattr(self, "mode", "mock"),
             "ai_online": False,
             "head_pose": {"direction": NO_FACE, "yaw": None, "pitch": None, "roll": None, "confidence": 0.0},
             "detection": {"label": None, "bbox": None},
             "face_detected": False,
-            "driver_status": status,
+            "driver_status": "NO_SIGNAL",
             "warning": {"active": False, "code": None, "message": "", "off_duration": 0.0, "threshold": WARN_AFTER},
         }
 
     def process(self, pose: PoseIn) -> dict:
         now = time.monotonic()
+        self.last_ai = now
         if not pose.face_detected:
             direction = NO_FACE
         elif pose.direction:
@@ -115,7 +110,6 @@ class Hub:
         msg = {
             "type": "state",
             "timestamp": pose.timestamp or time.time(),
-            "source": self.mode,
             "ai_online": True,
             "head_pose": {
                 "direction": direction,
@@ -129,7 +123,6 @@ class Hub:
                 "bbox": [round(v, 4) for v in pose.bbox] if pose.bbox and has_face else None,
             },
             "face_detected": has_face,
-            "video_time": pose.video_time,
             "driver_status": "WARNING" if warning["active"] else "NORMAL",
             "warning": warning,
         }
@@ -149,39 +142,25 @@ class Hub:
         for ws in dead:
             self.clients.discard(ws)
 
-    def set_mode(self, mode: str) -> None:
-        self.mode = mode
-        self.engine.reset()
-        self.last_live = 0.0
-        self.last_message = self._empty_message("NORMAL" if mode == "mock" else "NO_SIGNAL")
-
 
 hub = Hub()
 
 
-async def simulator_task() -> None:
-    async for data in pose_stream():
-        if hub.mode == "mock":
-            await hub.broadcast(hub.process(PoseIn(**data)))
-
-
 async def watchdog_task() -> None:
-    """Chế độ live: nếu AI ngừng gửi dữ liệu thì báo NO_SIGNAL (kiểm tra kết nối gián đoạn)."""
+    """Nếu AI ngừng gửi dữ liệu thì báo NO_SIGNAL (xử lý trường hợp kết nối bị gián đoạn)."""
     while True:
         await asyncio.sleep(0.5)
-        if hub.mode == "live" and time.monotonic() - hub.last_live > LIVE_TIMEOUT:
-            if hub.last_message.get("driver_status") != "NO_SIGNAL":
-                hub.engine.reset()
-                hub.last_message = hub._empty_message()
-                await hub.broadcast(hub.last_message)
+        if hub.last_message.get("driver_status") != "NO_SIGNAL" and not hub.ai_online():
+            hub.engine.reset()
+            hub.last_message = hub._empty_message()
+            await hub.broadcast(hub.last_message)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    tasks = [asyncio.create_task(simulator_task()), asyncio.create_task(watchdog_task())]
+    task = asyncio.create_task(watchdog_task())
     yield
-    for t in tasks:
-        t.cancel()
+    task.cancel()
 
 
 app = FastAPI(title="Driver Monitoring Dashboard", lifespan=lifespan)
@@ -190,18 +169,13 @@ app = FastAPI(title="Driver Monitoring Dashboard", lifespan=lifespan)
 # ---------------------------------------------------------------- REST
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "mode": hub.mode, "clients": len(hub.clients), "camera_online": hub.camera_online()}
+    return {"status": "ok", "clients": len(hub.clients), "camera_online": hub.camera_online(),
+            "ai_online": hub.ai_online()}
 
 
 @app.get("/api/config")
 def config():
-    video_exists = (DATA_DIR / VIDEO_FILE).exists()
-    return {
-        "mode": hub.mode,
-        "video_url": f"/video/{VIDEO_FILE}" if video_exists else None,
-        "video_path": str((DATA_DIR / VIDEO_FILE).resolve()),
-        "warn_after": WARN_AFTER,
-    }
+    return {"warn_after": WARN_AFTER}
 
 
 @app.get("/api/state")
@@ -209,22 +183,9 @@ def state():
     return hub.last_message
 
 
-@app.post("/api/mode")
-async def set_mode(body: ModeIn):
-    mode = body.mode.lower()
-    if mode not in ("mock", "live"):
-        raise HTTPException(400, "mode phải là 'mock' hoặc 'live'")
-    hub.set_mode(mode)
-    await hub.broadcast(hub.last_message)
-    return {"mode": hub.mode}
-
-
 @app.post("/api/pose")
 async def ingest_pose(pose: PoseIn):
-    """AI gửi kết quả head pose (HTTP). Chỉ được nhận khi mode = live."""
-    if hub.mode != "live":
-        return {"accepted": False, "reason": "dashboard đang ở chế độ mock"}
-    hub.last_live = time.monotonic()
+    """AI gửi kết quả cho một khung hình (HTTP)."""
     await hub.broadcast(hub.process(pose))
     return {"accepted": True}
 
@@ -246,19 +207,16 @@ async def ws_dashboard(ws: WebSocket):
 
 @app.websocket("/ws/ingest")
 async def ws_ingest(ws: WebSocket):
-    """AI gửi head pose qua WebSocket (mỗi tin nhắn là một JSON PoseIn)."""
+    """AI gửi kết quả qua WebSocket (mỗi tin nhắn là một JSON PoseIn)."""
     await ws.accept()
     try:
         while True:
             raw = await ws.receive_text()
-            if hub.mode != "live":
-                continue
             try:
                 pose = PoseIn(**json.loads(raw))
             except Exception as e:
                 await ws.send_text(json.dumps({"error": str(e)}))
                 continue
-            hub.last_live = time.monotonic()
             await hub.broadcast(hub.process(pose))
     except WebSocketDisconnect:
         pass
@@ -285,7 +243,7 @@ async def ws_camera(ws: WebSocket):
 def latest_frame():
     """Khung hình webcam mới nhất (một ảnh JPEG)."""
     if hub.frame is None:
-        raise HTTPException(404, "chưa có khung hình webcam, hãy bật webcam trên dashboard")
+        raise HTTPException(404, "chưa có khung hình webcam, hãy mở dashboard và cho phép dùng webcam")
     return Response(hub.frame, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
 
@@ -309,13 +267,16 @@ async def mjpeg_stream():
 
 
 # ---------------------------------------------------------------- Static
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-app.mount("/video", StaticFiles(directory=DATA_DIR), name="video")   # hỗ trợ Range cho MP4
-
-
 @app.get("/")
 def index():
-    return FileResponse(FRONTEND_DIR / "index.html")
+    return FileResponse(FRONTEND_DIR / "index.html", headers={"Cache-Control": "no-store"})
 
 
-app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
+class NoCacheStatic(StaticFiles):
+    async def get_response(self, path, scope):
+        resp = await super().get_response(path, scope)
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+
+app.mount("/static", NoCacheStatic(directory=FRONTEND_DIR), name="static")

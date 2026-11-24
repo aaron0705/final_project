@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Driver Monitor Dashboard</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=3">
 </head>
 <body data-status="NO_SIGNAL">
   <header class="topbar">
@@ -17,32 +17,19 @@
     </div>
     <div class="top-actions">
       <span class="pill" id="connPill"><i class="dot"></i><span id="connText">Đang kết nối…</span></span>
-      <span class="pill" id="aiPill"><i class="dot"></i><span id="aiText">AI: --</span></span>
-      <label class="select">Hình ảnh
-        <select id="srcSelect">
-          <option value="file">Video file</option>
-          <option value="webcam">Webcam</option>
-        </select>
-      </label>
-      <label class="select">Nguồn dữ liệu
-        <select id="modeSelect">
-          <option value="mock">Giả lập (mock)</option>
-          <option value="live">AI thật (live)</option>
-        </select>
-      </label>
-      <button id="soundBtn" class="btn" type="button">🔇 Âm thanh: tắt</button>
-    </div>
+      <div class="select">Nguồn hình ảnh
+        <span class="pill" id="srcPill"><i class="dot"></i><b id="srcSelect">Đang dò webcam…</b></span>
+      </div>
+
   </header>
 
   <main class="grid">
     <!-- VIDEO -->
     <section class="card video-card">
       <div class="video-wrap" id="videoWrap">
-        <video id="video" autoplay muted loop playsinline controls></video>
+        <video id="video" autoplay muted playsinline></video>
         <canvas id="overlay" class="overlay"></canvas>
-        <div class="video-empty" id="videoEmpty" hidden>
-          Chưa có video. Hãy đặt file <code>sample.mp4</code> vào thư mục <code>data/</code> rồi tải lại trang.
-        </div>
+        <div class="video-empty" id="videoEmpty">Đang dò webcam…</div>
         <div class="badge-status" id="videoBadge">--</div>
         <div class="badge-dir" id="videoDir">--</div>
         <div class="alarm-banner" id="alarmBanner" hidden>
@@ -115,6 +102,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=3"></script>
 </body>
 </html>
